@@ -22,9 +22,13 @@
 
 package pascal.taie.analysis.dataflow.solver;
 
+import pascal.taie.Assignment;
 import pascal.taie.analysis.dataflow.analysis.DataflowAnalysis;
 import pascal.taie.analysis.dataflow.fact.DataflowResult;
 import pascal.taie.analysis.graph.cfg.CFG;
+
+import java.util.ArrayDeque;
+import java.util.Queue;
 
 class WorkListSolver<Node, Fact> extends Solver<Node, Fact> {
 
@@ -34,11 +38,53 @@ class WorkListSolver<Node, Fact> extends Solver<Node, Fact> {
 
     @Override
     protected void doSolveForward(CFG<Node> cfg, DataflowResult<Node, Fact> result) {
-        // TODO - finish me
+        Queue<Node> worklist = new ArrayDeque<>();
+        for (Node node : cfg) {
+            if (node.equals(cfg.getEntry())) {
+                continue;
+            }
+            worklist.add(node);
+        }
+        while (!worklist.isEmpty()) {
+            Node node = worklist.poll();
+            result.setInFact(node, analysis.newInitialFact());
+            for (Node pred : cfg.getPredsOf(node)) {
+                analysis.meetInto(result.getOutFact(pred), result.getInFact(node));
+            }
+            if (!analysis.transferNode(node, result.getInFact(node), result.getOutFact(node))) {
+                continue;
+            }
+            for (Node succ : cfg.getSuccsOf(node)) {
+                if (!worklist.contains(succ)) {
+                    worklist.add(succ);
+                }
+            }
+        }
     }
 
     @Override
     protected void doSolveBackward(CFG<Node> cfg, DataflowResult<Node, Fact> result) {
-        // TODO - finish me
+        Queue<Node> worklist = new ArrayDeque<>();
+        for (Node node : cfg) {
+            if (node.equals(cfg.getExit())) {
+                continue;
+            }
+            worklist.add(node);
+        }
+        while (!worklist.isEmpty()) {
+            Node node = worklist.poll();
+            result.setOutFact(node, analysis.newInitialFact());
+            for (Node succ : cfg.getSuccsOf(node)) {
+                analysis.meetInto(result.getInFact(succ), result.getOutFact(node));
+            }
+            if (!analysis.transferNode(node, result.getInFact(node), result.getOutFact(node))) {
+                continue;
+            }
+            for (Node pred : cfg.getPredsOf(node)) {
+                if (!worklist.contains(pred)) {
+                    worklist.add(pred);
+                }
+            }
+        }
     }
 }

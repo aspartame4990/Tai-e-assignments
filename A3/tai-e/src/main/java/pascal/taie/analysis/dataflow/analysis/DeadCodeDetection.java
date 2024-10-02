@@ -30,24 +30,16 @@ import pascal.taie.analysis.dataflow.fact.DataflowResult;
 import pascal.taie.analysis.dataflow.fact.SetFact;
 import pascal.taie.analysis.graph.cfg.CFG;
 import pascal.taie.analysis.graph.cfg.CFGBuilder;
-import pascal.taie.analysis.graph.cfg.Edge;
 import pascal.taie.config.AnalysisConfig;
 import pascal.taie.ir.IR;
-import pascal.taie.ir.exp.ArithmeticExp;
-import pascal.taie.ir.exp.ArrayAccess;
-import pascal.taie.ir.exp.CastExp;
-import pascal.taie.ir.exp.FieldAccess;
-import pascal.taie.ir.exp.NewExp;
-import pascal.taie.ir.exp.RValue;
-import pascal.taie.ir.exp.Var;
+import pascal.taie.ir.exp.*;
 import pascal.taie.ir.stmt.AssignStmt;
 import pascal.taie.ir.stmt.If;
 import pascal.taie.ir.stmt.Stmt;
 import pascal.taie.ir.stmt.SwitchStmt;
+import pascal.taie.util.collection.Pair;
 
-import java.util.Comparator;
-import java.util.Set;
-import java.util.TreeSet;
+import java.util.*;
 
 public class DeadCodeDetection extends MethodAnalysis {
 
@@ -69,8 +61,14 @@ public class DeadCodeDetection extends MethodAnalysis {
                 ir.getResult(LiveVariableAnalysis.ID);
         // keep statements (dead code) sorted in the resulting set
         Set<Stmt> deadCode = new TreeSet<>(Comparator.comparing(Stmt::getIndex));
-        // TODO - finish me
-        // Your task is to recognize dead code in ir and add it to deadCode
+        Set<Stmt> reachable = new TreeSet<>(Comparator.comparing(Stmt::getIndex));
+        Set<Stmt> uselessAssignments = dfs(cfg.getEntry(), reachable, cfg, constants, liveVars);
+        deadCode.addAll(cfg.getNodes());
+        deadCode.removeAll(reachable);
+        deadCode.addAll(uselessAssignments);
+        // 确保entry和exit不在deadcode中
+        deadCode.remove(cfg.getEntry());
+        deadCode.remove(cfg.getExit());
         return deadCode;
     }
 
@@ -95,5 +93,65 @@ public class DeadCodeDetection extends MethodAnalysis {
             return op != ArithmeticExp.Op.DIV && op != ArithmeticExp.Op.REM;
         }
         return true;
+    }
+
+    public Set<Stmt> dfs(Stmt node, Set<Stmt> visited, CFG<Stmt> cfg, DataflowResult<Stmt, CPFact> constants, DataflowResult<Stmt, SetFact<Var>> liveVars) {
+        Set<Stmt> uselessAssignments = new TreeSet<>(Comparator.comparing(Stmt::getIndex));
+        if (visited.contains(node)) {
+            return uselessAssignments;
+        }
+        visited.add(node);
+        if (node instanceof AssignStmt assignment && assignment.getLValue() instanceof Var var && !liveVars.getOutFact(node).contains(var) && hasNoSideEffect(assignment.getRValue())) {
+            uselessAssignments.add(node);
+        }
+        if (node instanceof If ifStmt) {
+            assert cfg.getSuccsOf(ifStmt).size() == 2;
+            Value conditionValue = ConstantPropagation.evaluate(ifStmt.getCondition(), constants.getInFact(ifStmt));
+            Stmt ifTrue = null;
+            Stmt ifFalse = null;
+            for (Stmt succ : cfg.getSuccsOf(ifStmt)) {
+                if (succ.equals(ifStmt.getTarget())) {
+                    ifTrue = succ;
+                } else {
+                    ifFalse = succ;
+                }
+            }
+            if (!conditionValue.isConstant()) {
+                uselessAssignments.addAll(dfs(ifTrue, visited, cfg, constants, liveVars));
+                uselessAssignments.addAll(dfs(ifFalse, visited, cfg, constants, liveVars));
+                return uselessAssignments;
+            }
+            if (conditionValue.getConstant() == 0) {
+                uselessAssignments.addAll(dfs(ifFalse, visited, cfg, constants, liveVars));
+                return uselessAssignments;
+            }
+            if (conditionValue.getConstant() == 1) {
+                uselessAssignments.addAll(dfs(ifTrue, visited, cfg, constants, liveVars));
+                return uselessAssignments;
+            }
+        }
+        if (node instanceof SwitchStmt switchStmt) {
+            Value conditionValue = ConstantPropagation.evaluate(switchStmt.getVar(), constants.getInFact(switchStmt));
+            if (!conditionValue.isConstant()) {
+                for (Stmt succ : cfg.getSuccsOf(switchStmt)) {
+                    uselessAssignments.addAll(dfs(succ, visited, cfg, constants, liveVars));
+                }
+                return uselessAssignments;
+            } else {
+                int conditionConst = conditionValue.getConstant();
+                for (Pair<Integer, Stmt> switchPair : switchStmt.getCaseTargets()) {
+                    if (conditionConst == switchPair.first()) {
+                        uselessAssignments.addAll(dfs(switchPair.second(), visited, cfg, constants, liveVars));
+                        return uselessAssignments;
+                    }
+                }
+                uselessAssignments.addAll(dfs(switchStmt.getDefaultTarget(), visited, cfg, constants, liveVars));
+                return uselessAssignments;
+            }
+        }
+        for (Stmt succ : cfg.getSuccsOf(node)) {
+            uselessAssignments.addAll(dfs(succ, visited, cfg, constants, liveVars));
+        }
+        return uselessAssignments;
     }
 }
